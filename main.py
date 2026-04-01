@@ -1,51 +1,57 @@
-from aiohttp import web
+import os
 import asyncio
-import sqlite3
 import logging
+import ssl
+import certifi
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from pymongo import MongoClient
 
-# --- 1. RENDER UCHUN VEB-SERVER (O'CHIB QOLMASLIGI UCHUN) ---
+# --- 1. RENDER UCHUN VEB-SERVER ---
 async def handle(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="KC Studio Bot is Online 24/7!")
 
 async def start_server():
     app = web.Application()
     app.router.add_get('/', handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render 10000-portni qidiradi
-    site = web.TCPSite(runner, '0.0.0.0', 10000)
+    port = int(os.environ.get("PORT", 10001))
+    site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print("✅ Veb-server 10000-portda ishga tushdi")
+    print(f"✅ Veb-server {port}-portda ishga tushdi")
 
 # --- 2. SOZLAMALAR ---
 API_TOKEN = '8770677204:AAFEcS1Iu5aseazXKVQwq9OYyn9RIJRUmGs'
 ADMIN_ID = 7230209120
+MONGO_URL = "mongodb+srv://alisherkenjayev1202_db_user:Y1SSUvfYGkjQsoQw@cluster0.rcko5fk.mongodb.net/kc_studio_db?retryWrites=true&w=majority&appName=Cluster0"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
+# --- SSL VA MONGODB ULANISHINI TUZATISH (MUHIM!) ---
+try:
+    # Noutbukda SSL xatosi chiqmasligi uchun certifi ishlatamiz
+    ca = certifi.where()
+    client = MongoClient(MONGO_URL, tlsCAFile=ca, serverSelectionTimeoutMS=5000)
+    db = client['kc_studio_db']
+    movies_col = db['movies']
+    # Ulanishni tekshirib ko'ramiz
+    client.admin.command('ping')
+    print("✅ MongoDB-ga muvaffaqiyatli ulandi!")
+except Exception as e:
+    print(f"❌ MongoDB-ga ulanishda xato: {e}")
+
 class MovieAdd(StatesGroup):
     waiting_for_video = State()
     waiting_for_code = State()
 
-# --- 3. BAZANI ISHGA TUSHIRISH ---
-def init_db():
-    conn = sqlite3.connect('kc_studio.db')
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS movies 
-                      (code TEXT PRIMARY KEY, file_id TEXT, title TEXT)''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# --- 4. PREMIUM TUGMALAR ---
+# --- 3. PREMIUM TUGMALAR ---
 def get_main_menu():
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="🔍 Kino qidirish bo'yicha yordam", callback_data="help_search"))
@@ -56,14 +62,13 @@ def get_main_menu():
     builder.row(types.InlineKeyboardButton(text="ℹ️ Biz haqimizda", callback_data="about"))
     return builder.as_markup()
 
-# --- 5. BUYRUQLAR VA LOGIKA ---
+# --- 4. BUYRUQLAR VA LOGIKA ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     welcome_text = (
         f"🎬 **Kenjayev Cinema | KC Studio**\n\n"
         f"Assalomu alaykum, {message.from_user.first_name}!\n"
-        "Botimizga xush kelibsiz. Kino ko'rish uchun uning **kodini** yozib yuboring.\n\n"
-        "👇 Pastdagi menyudan foydalaning:"
+        "Botimizga xush kelibsiz. Kino ko'rish uchun uning **kodini** yozib yuboring."
     )
     if message.from_user.id == ADMIN_ID:
         welcome_text += "\n\n👨‍💻 **Admin:** Kino qo'shish uchun /add buyrug'ini bosing."
@@ -71,14 +76,15 @@ async def cmd_start(message: types.Message):
 
 @dp.callback_query(F.data == "help_search")
 async def help_search(callback: types.CallbackQuery):
-    await callback.message.answer("🔢 Kinoni qanday topish mumkin?\n\nJuda oson! Shunchaki kino kodini (masalan: 101) botga xabar qilib yuboring.")
+    await callback.message.answer("🔢 Kinoni qanday topish mumkin?\n\nJuda oson! Shunchaki kino kodini (masalan: 101) botga yozib yuboring.")
     await callback.answer()
 
 @dp.callback_query(F.data == "about")
 async def about_kc(callback: types.CallbackQuery):
-    await callback.message.answer("🎬 **KC Studio** — professional video va kino kontent platformasi.\nAsoschi: **Alisher Kenjayev**")
+    await callback.message.answer("🎬 **KC Studio** — professional kino kontent platformasi.\nAsoschi: **Alisher Kenjayev**")
     await callback.answer()
 
+# --- ADMIN: KINO QO'SHISH ---
 @dp.message(Command("add"), F.from_user.id == ADMIN_ID)
 async def start_add_movie(message: types.Message, state: FSMContext):
     await message.answer("📥 Menga kino **videosini** yuboring:")
@@ -87,55 +93,51 @@ async def start_add_movie(message: types.Message, state: FSMContext):
 @dp.message(MovieAdd.waiting_for_video, F.video)
 async def save_video_id(message: types.Message, state: FSMContext):
     await state.update_data(v_id=message.video.file_id)
-    await message.answer("✅ Video qabul qilindi. Endi bu kino uchun **maxsus kod** kiriting (masalan: 77):")
+    await message.answer("✅ Video qabul qilindi. Endi kino uchun **kod** kiriting:")
     await state.set_state(MovieAdd.waiting_for_code)
 
 @dp.message(MovieAdd.waiting_for_code)
 async def save_movie_to_db(message: types.Message, state: FSMContext):
     data = await state.get_data()
     m_code = message.text
-    m_video = data['v_id']
-    conn = sqlite3.connect('kc_studio.db')
-    cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO movies (code, file_id) VALUES (?, ?)", (m_code, m_video))
-        conn.commit()
-        await message.answer(f"🎉 **Muvaffaqiyatli!**\nKino bazaga qo'shildi. Kod: {m_code}", parse_mode="Markdown")
-    except sqlite3.IntegrityError:
-        await message.answer("⚠️ Bu kod bazada bor! Iltimos, boshqa kod kiriting.")
-    finally:
-        conn.close()
-        await state.clear()
+        if movies_col.find_one({"code": m_code}):
+            await message.answer("⚠️ Bu kod bazada bor! Boshqa kod kiriting.")
+        else:
+            movies_col.insert_one({"code": m_code, "file_id": data['v_id']})
+            await message.answer(f"🎉 **Muvaffaqiyatli!**\nKino bazaga qo'shildi. Kod: {m_code}", parse_mode="Markdown")
+            await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Xato: {e}")
 
+# --- FOYDALANUVCHI: KINO QIDIRISH ---
 @dp.message()
 async def search_movie(message: types.Message):
-    query_code = message.text
-    conn = sqlite3.connect('kc_studio.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT file_id FROM movies WHERE code=?", (query_code,))
-    result = cursor.fetchone()
-    conn.close()
-    if result:
-        await message.answer_video(
-            video=result[0], 
-            caption=f"🎬 **KC Studio taqdim etadi!**\n\n🔑 Kod: {query_code}\n🍿 Yoqimli hordiq tilaymiz!",
-            parse_mode="Markdown"
-        )
-    else:
-        if message.from_user.id != ADMIN_ID or not message.text.startswith('/'):
-            await message.answer("😔 Kechirasiz, bu kod bilan kino topilmadi.\nIltimos, kodni to'g'ri yozganingizni tekshiring.")
+    if message.text and not message.text.startswith('/'):
+        try:
+            # Bazadan qidirish
+            res = movies_col.find_one({"code": message.text})
+            if res:
+                await message.answer_video(
+                    video=res['file_id'], 
+                    caption=f"🎬 **KC Studio taqdim etadi!**\n\n🔑 Kod: {message.text}\n🍿 Yoqimli hordiq!",
+                    parse_mode="Markdown"
+                )
+            else:
+                await message.answer("😔 Bu kod bilan kino topilmadi.")
+        except Exception as e:
+            logging.error(f"Qidiruv xatosi: {e}")
+            await message.answer("⚠️ Baza bilan ulanishda muammo bo'ldi. Birozdan so'ng urinib ko'ring.")
 
-# --- 6. ASOSIY ISHGA TUSHIRISH (BU YERGA QARA!) ---
+# --- 5. ASOSIY ISHGA TUSHIRISH ---
 async def main():
-    # Render o'chib qolmasligi uchun serverni yoqish (MUHIM!)
     await start_server() 
-    
     print("🚀 KC Studio boti ishga tushdi!")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
+    try: 
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot to'xtatildi!")
