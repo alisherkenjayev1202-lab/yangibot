@@ -34,14 +34,13 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# --- SSL VA MONGODB ULANISHINI TUZATISH (MUHIM!) ---
+# --- SSL VA MONGODB ULANISHI ---
 try:
-    # Noutbukda SSL xatosi chiqmasligi uchun certifi ishlatamiz
     ca = certifi.where()
     client = MongoClient(MONGO_URL, tlsCAFile=ca, serverSelectionTimeoutMS=5000)
     db = client['kc_studio_db']
     movies_col = db['movies']
-    # Ulanishni tekshirib ko'ramiz
+    users_col = db['users']  # YANGI: Foydalanuvchilar bazasi
     client.admin.command('ping')
     print("✅ MongoDB-ga muvaffaqiyatli ulandi!")
 except Exception as e:
@@ -63,16 +62,30 @@ def get_main_menu():
     return builder.as_markup()
 
 # --- 4. BUYRUQLAR VA LOGIKA ---
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    # --- STATISTIKA UCHUN FOYDALANUVCHINI RO'YXATGA OLISH ---
+    user_id = message.from_user.id
+    if not users_col.find_one({"user_id": user_id}):
+        users_col.insert_one({"user_id": user_id})
+    
     welcome_text = (
         f"🎬 **Kenjayev Cinema | KC Studio**\n\n"
         f"Assalomu alaykum, {message.from_user.first_name}!\n"
         "Botimizga xush kelibsiz. Kino ko'rish uchun uning **kodini** yozib yuboring."
     )
+    
     if message.from_user.id == ADMIN_ID:
-        welcome_text += "\n\n👨‍💻 **Admin:** Kino qo'shish uchun /add buyrug'ini bosing."
+        welcome_text += "\n\n👨‍💻 **Admin paneli:**\n/add - Kino qo'shish\n/stat - Foydalanuvchilar soni"
+        
     await message.answer(welcome_text, reply_markup=get_main_menu(), parse_mode="Markdown")
+
+# --- YANGI: ADMIN UCHUN STATISTIKA BUYRUG'I ---
+@dp.message(Command("stat"), F.from_user.id == ADMIN_ID)
+async def cmd_stat(message: types.Message):
+    count = users_col.count_documents({})
+    await message.answer(f"📊 **Bot statistikasi**\n\nFoydalanuvchilar soni: **{count}** ta", parse_mode="Markdown")
 
 @dp.callback_query(F.data == "help_search")
 async def help_search(callback: types.CallbackQuery):
@@ -115,7 +128,6 @@ async def save_movie_to_db(message: types.Message, state: FSMContext):
 async def search_movie(message: types.Message):
     if message.text and not message.text.startswith('/'):
         try:
-            # Bazadan qidirish
             res = movies_col.find_one({"code": message.text})
             if res:
                 await message.answer_video(
@@ -127,7 +139,7 @@ async def search_movie(message: types.Message):
                 await message.answer("😔 Bu kod bilan kino topilmadi.")
         except Exception as e:
             logging.error(f"Qidiruv xatosi: {e}")
-            await message.answer("⚠️ Baza bilan ulanishda muammo bo'ldi. Birozdan so'ng urinib ko'ring.")
+            await message.answer("⚠️ Baza bilan ulanishda muammo bo'ldi.")
 
 # --- 5. ASOSIY ISHGA TUSHIRISH ---
 async def main():
